@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Rathi ChatBot</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Poppins', sans-serif;
+      background-color: #f0f0f0;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .chat-container {
+      width: 400px;
+      height: 600px;
+      background-color: #fff;
+      border-radius: 10px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chat-header {
+      background-color: #007bff;
+      color: #fff;
+      text-align: center;
+      padding: 15px;
+      font-size: 1.2em;
+      font-weight: 600;
+    }
+    .messages {
+      flex-grow: 1;
+      padding: 10px;
+      overflow-y: auto;
+      background-color: #f9f9f9;
+      background-image: url('image/image.jpg'); /* Update to relative path */
+      background-size: cover; /* Ensures the image covers the entire area */
+      background-position: center center; /* Centers the image */
+      display: flex;
+      flex-direction: column;
+    }
+    .message {
+      margin-bottom: 10px;
+      max-width: 80%;
+      white-space: pre-wrap;
+    }
+    .message.user {
+      align-self: flex-end;
+      background-color: #007bff;
+      color: #fff;
+      padding: 10px;
+      border-radius: 10px 10px 0 10px;
+    }
+    .message.bot {
+      align-self: flex-start;
+      background-color: #e1e1e1;
+      padding: 10px;
+      border-radius: 10px 10px 10px 0;
+    }
+    .input-area {
+      display: flex;
+      padding: 10px;
+      border-top: 1px solid #ddd;
+      background-color: #fff;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    textarea {
+      flex-grow: 1;
+      resize: none;
+      padding: 8px;
+      border-radius: 5px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+      font-family: 'Poppins', sans-serif;
+    }
+    button {
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.3s ease;
+    }
+    button:hover {
+      background-color: #0056b3;
+      box-shadow: 0 0 15px rgba(0, 123, 255, 0.6); /* Glowing effect */
+    }
+    button:active {
+      background-color: #004085;
+      box-shadow: 0 0 25px rgba(0, 123, 255, 0.8); /* Glowing effect on active */
+    }
+    code {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    pre code {
+      display: block;
+      background: #272822;
+      color: #f8f8f2;
+      padding: 10px;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="chat-container" id="chatContainer">
+    <div class="chat-header">Rathi ChatBot</div>
+    <div class="messages" id="messages"></div>
+    <div class="input-area">
+      <textarea id="userInput" rows="1" placeholder="Ask something..."></textarea>
+      <button onclick="sendMessage()">Ask!</button>
+      <input type="file" id="fileInput" accept=".txt,.csv,.json,.md,.log" style="display:none;" onchange="handleFileUpload(event)">
+      <button onclick="document.getElementById('fileInput').click()">Upload</button>
+    </div>
+  </div>
+
+  <script>
+    const apiKey = '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'; // Your API key
+    const messagesDiv = document.getElementById('messages');
+    const userInput = document.getElementById('userInput');
+    const chatContainer = document.getElementById('chatContainer');
+
+    // Submit on Enter
+    userInput.addEventListener("keydown", function(e) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    function appendMessage(content, sender) {
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `message ${sender}`;
+      msgDiv.innerHTML = sender === 'bot' ? marked.parse(content) : content;
+      messagesDiv.appendChild(msgDiv);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const input = userInput.value.trim();
+      if (!input) return;
+
+      appendMessage(input, 'user');
+      userInput.value = '';
+
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + apiKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'openai/gpt-3.5-turbo',
+            messages: [{ role: 'user', content: input }],
+          }),
+        });
+
+        const data = await res.json();
+        const reply = data.choices?.[0]?.message?.content || 'No valid response.';
+        appendMessage(reply, 'bot');
+      } catch (err) {
+        appendMessage('⚠️ Error: ' + err.message, 'bot');
+      }
+    }
+
+    function handleFileUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+
+      reader.onload = function(e) {
+        const content = e.target.result;
+        const fileMsg = `📂 *Uploaded File (${file.name}):*\n\n\`\`\`\n${content}\n\`\`\``;
+        appendMessage(fileMsg, 'user');
+
+        // Send content to chatbot
+        fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + apiKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'openai/gpt-3.5-turbo',
+            messages: [
+              { role: 'user', content: `I have uploaded a file named "${file.name}". Here is its content:\n\n${content}` }
+            ],
+          }),
+        })
+        .then(res => res.json())
+        .then(data => {
+          const reply = data.choices?.[0]?.message?.content || 'No valid response.';
+          appendMessage(reply, 'bot');
+        })
+        .catch(err => {
+          appendMessage('⚠️ Error: ' + err.message, 'bot');
+        });
+      };
+
+      reader.readAsText(file);
+    }
+
+    // Toggle visibility on Ctrl + L
+    let isChatVisible = true;
+    document.addEventListener('keydown', function(e) {
+      if (e.ctrlKey && e.key.toLowerCase() === 'l') {
+        isChatVisible = !isChatVisible;
+        chatContainer.style.display = isChatVisible ? 'flex' : 'none';
+      }
+    });
+  </script>
+</body>
+</html>
