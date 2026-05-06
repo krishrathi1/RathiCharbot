@@ -283,11 +283,11 @@
     const API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
     const MODEL = 'nvidia/llama-3.3-nemotron-super-49b-v1.5';
 
-    const SYSTEM_PROMPT = 'Answer directly. For MCQs: state the correct option with 1-line reason. For logic/math: give the final answer in bold. Never greet or add filler. If input is OCR text, find and answer every question in it.';
+    const SYSTEM_PROMPT = 'Give ONLY the direct answer. MCQ: option + 1-line reason. Math/logic: bold answer. No greetings.';
 
-    // ─── Conversation Memory (last 6 exchanges) ────────────────
+    // ─── Conversation Memory (last 2 exchanges for speed) ────────
     let conversationHistory = [{ role: 'system', content: SYSTEM_PROMPT }];
-    const MAX_HISTORY = 12; // 6 user + 6 assistant messages
+    const MAX_HISTORY = 4; // 2 user + 2 assistant
 
     // ─── DOM ─────────────────────────────────────────────────────
     const chat = document.getElementById('chat');
@@ -328,28 +328,40 @@
     }
 
     function renderBot(div, raw) {
-      // Strip <thought> blocks — keep only the visible answer
       let clean = raw.replace(/<thought>[\s\S]*?<\/thought>/g, '').trim();
-      // Also strip partial unclosed thought tags during streaming
       clean = clean.replace(/<thought>[\s\S]*$/g, '').trim();
       div.innerHTML = clean ? marked.parse(clean) : '<span class="typing-dots"></span>';
     }
 
+    // ─── OCR Text Cleanup (faster AI processing) ─────────────────
+    function cleanOCRText(raw) {
+      return raw
+        .replace(/[^\x20-\x7E\n]/g, ' ')  // Remove non-ASCII junk
+        .replace(/\n{3,}/g, '\n\n')         // Collapse blank lines
+        .replace(/ {2,}/g, ' ')             // Collapse spaces
+        .trim()
+        .slice(0, 3000);                    // Cap at 3000 chars max
+    }
+
     // ─── Core Send Logic ─────────────────────────────────────────
     async function sendMessage(overrideText = null) {
-      const text = overrideText || input.value.trim();
+      let text = overrideText || input.value.trim();
       if (!text || isBusy) return;
 
       isBusy = true;
 
-      // Show user message (truncate display for OCR dumps)
+      // Clean OCR text for speed
+      if (overrideText) {
+        text = cleanOCRText(text);
+      }
+
+      // Show user message
       if (!overrideText) {
         addMsg(text, 'user');
         input.value = '';
         input.style.height = '22px';
       } else {
-        // For screen captures, show a compact preview
-        const preview = text.length > 120 ? text.slice(0, 120) + '...' : text;
+        const preview = text.length > 100 ? text.slice(0, 100) + '…' : text;
         addMsg('📸 ' + preview, 'user', 'scan-source');
       }
 
@@ -358,13 +370,14 @@
       // Add to conversation
       conversationHistory.push({ role: 'user', content: text });
 
-      // Trim history
+      // Aggressive history trim for speed
       while (conversationHistory.length > MAX_HISTORY + 1) {
-        conversationHistory.splice(1, 2); // Remove oldest user+assistant pair
+        conversationHistory.splice(1, 2);
       }
 
       const botDiv = addMsg('', 'bot');
       let fullResponse = '';
+      let tokenCount = 0;
 
       try {
         const res = await fetch(API_URL, {
@@ -378,14 +391,15 @@
             model: MODEL,
             messages: conversationHistory,
             temperature: 0.1,
-            max_tokens: 1024,
+            top_p: 0.3,
+            max_tokens: 512,
             stream: true
           })
         });
 
         if (!res.ok) {
           const errText = await res.text();
-          throw new Error(`API ${res.status}: ${errText.slice(0, 100)}`);
+          throw new Error(`API ${res.status}: ${errText.slice(0, 80)}`);
         }
 
         const reader = res.body.getReader();
@@ -397,10 +411,8 @@
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-
-          // Process complete lines from buffer
           const lines = buffer.split('\n');
-          buffer = lines.pop(); // Keep incomplete last line
+          buffer = lines.pop();
 
           for (const line of lines) {
             if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
@@ -409,14 +421,21 @@
               const token = data.choices?.[0]?.delta?.content;
               if (token) {
                 fullResponse += token;
-                renderBot(botDiv, fullResponse);
-                chat.scrollTop = chat.scrollHeight;
+                tokenCount++;
+                // Render every 3 tokens to reduce DOM thrashing
+                if (tokenCount % 3 === 0) {
+                  renderBot(botDiv, fullResponse);
+                  chat.scrollTop = chat.scrollHeight;
+                }
               }
-            } catch (e) { /* skip malformed chunks */ }
+            } catch (e) {}
           }
         }
 
-        // Save assistant response to history
+        // Final render
+        renderBot(botDiv, fullResponse);
+        chat.scrollTop = chat.scrollHeight;
+
         conversationHistory.push({ role: 'assistant', content: fullResponse });
         setStatus('Ready');
 

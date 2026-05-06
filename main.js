@@ -1,6 +1,7 @@
 const { app, BrowserWindow, globalShortcut, clipboard, desktopCapturer, ipcMain, screen } = require('electron');
-const Tesseract = require('tesseract.js');
 const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 // ─── GPU & Display Fixes ────────────────────────────────────────
 app.commandLine.appendSwitch('disable-gpu');
@@ -10,29 +11,17 @@ app.commandLine.appendSwitch('disable-features', 'ColorCorrectRendering,GpuProce
 app.commandLine.appendSwitch('use-angle', 'gl');
 app.commandLine.appendSwitch('disable-direct-composition');
 
-// ─── Single Instance Lock (prevents zombie shortcut conflicts) ──
+// ─── Single Instance Lock ────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); }
 
 // ─── State ───────────────────────────────────────────────────────
 let mainWindow;
-let worker;
-let lastClipboardText = '';
 let isProcessing = false;
 
-// ─── Win32 Stealth API (zero dependencies) ───────────────────────
-// Three layers of stealth:
-// 1. WDA_EXCLUDEFROMCAPTURE (0x11) — invisible to screen capture/recording
-// 2. WS_EX_NOACTIVATE (0x08000000) — clicking the window does NOT steal
-//    focus from the browser, so proctoring focus-detection is never triggered
-// 3. WS_EX_TOOLWINDOW (0x80) — hidden from Alt+Tab
-
-const fs = require('fs');
-const path = require('path');
-
+// ─── Win32 Stealth API ───────────────────────────────────────────
 function applyWindowStealth(win) {
   win.setContentProtection(true);
-
   if (process.platform !== 'win32') return;
 
   try {
@@ -57,8 +46,6 @@ $s = [G]::GetWindowLong($h, -20)
 `;
 
     fs.writeFileSync(scriptPath, script, 'utf8');
-
-    // Run async so it doesn't block app startup
     const { exec } = require('child_process');
     exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
       windowsHide: true,
@@ -75,16 +62,6 @@ $s = [G]::GetWindowLong($h, -20)
     console.log('[Ghost] Stealth error:', e.message);
   }
 }
-
-// ─── Pre-init Tesseract Worker ───────────────────────────────────
-(async () => {
-  try {
-    worker = await Tesseract.createWorker('eng');
-    console.log('[Ghost] Tesseract Worker Ready');
-  } catch (e) {
-    console.error('[Ghost] Worker Init Error:', e.message);
-  }
-})();
 
 // ─── Window Creation ─────────────────────────────────────────────
 function createWindow() {
@@ -109,34 +86,25 @@ function createWindow() {
 
   mainWindow.loadFile('index.html');
   mainWindow.setMenuBarVisibility(false);
-
-  // Apply stealth after the window is fully created
   mainWindow.once('ready-to-show', () => applyWindowStealth(mainWindow));
   applyWindowStealth(mainWindow);
 }
 
-// ─── Screen Capture + OCR ────────────────────────────────────────
-async function captureAndOCR() {
+// ─── Screen Capture (NO OCR — sends raw image to vision model) ───
+async function captureScreen() {
   if (!mainWindow || isProcessing) return;
-  if (!worker) {
-    mainWindow.webContents.send('status-update', '⚠️ OCR engine not ready');
-    return;
-  }
-
   isProcessing = true;
 
   const wasVisible = mainWindow.isVisible();
   try {
-    // Hide window so it doesn't capture itself
     if (wasVisible) {
       mainWindow.hide();
       await new Promise(r => setTimeout(r, 150));
     }
 
-    // Use 1280px width for fast OCR (good enough accuracy, much faster)
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: 1280, height: 720 }
+      thumbnailSize: { width: 1920, height: 1080 }
     });
 
     const primarySource = sources[0];
@@ -147,30 +115,24 @@ async function captureAndOCR() {
       return;
     }
 
-    const screenshot = primarySource.thumbnail.toDataURL();
+    // Get base64 PNG directly — no OCR needed!
+    const screenshot = primarySource.thumbnail.toPNG();
+    const base64Image = screenshot.toString('base64');
 
-    // Show window back immediately so user sees progress
     if (wasVisible) {
       mainWindow.showInactive();
       mainWindow.setAlwaysOnTop(true, 'screen-saver');
     }
 
-    mainWindow.webContents.send('status-update', '🔍 Analyzing...');
+    // Send raw image to frontend for vision model processing
+    mainWindow.webContents.send('screen-captured-image', base64Image);
 
-    const { data: { text } } = await worker.recognize(screenshot);
-    const cleaned = text ? text.trim() : '';
-
-    if (cleaned.length > 5) {
-      mainWindow.webContents.send('screen-captured', cleaned);
-    } else {
-      mainWindow.webContents.send('status-update', '⚠️ No readable text found');
-    }
   } catch (err) {
-    console.error('[Ghost] OCR Error:', err.message);
+    console.error('[Ghost] Capture Error:', err.message);
     if (wasVisible && !mainWindow.isVisible()) {
       mainWindow.showInactive();
     }
-    mainWindow.webContents.send('status-update', '⚠️ Scan failed');
+    mainWindow.webContents.send('status-update', '⚠️ Capture failed');
   } finally {
     isProcessing = false;
   }
@@ -186,14 +148,13 @@ ipcMain.on('window-close', () => {
 });
 
 ipcMain.on('trigger-scan', () => {
-  captureAndOCR();
+  captureScreen();
 });
 
 // ─── App Lifecycle ───────────────────────────────────────────────
 app.whenReady().then(() => {
   createWindow();
 
-  // Register shortcuts with individual error reporting
   const shortcuts = {
     'CommandOrControl+L': () => {
       if (mainWindow.isVisible()) {
@@ -203,7 +164,7 @@ app.whenReady().then(() => {
         mainWindow.setAlwaysOnTop(true, 'screen-saver');
       }
     },
-    'CommandOrControl+A': () => captureAndOCR()
+    'CommandOrControl+A': () => captureScreen()
   };
 
   let allRegistered = true;
@@ -220,11 +181,8 @@ app.whenReady().then(() => {
   }
 });
 
-app.on('will-quit', async () => {
+app.on('will-quit', () => {
   globalShortcut.unregisterAll();
-  if (worker) {
-    try { await worker.terminate(); } catch (e) {}
-  }
 });
 
 app.on('window-all-closed', () => {
