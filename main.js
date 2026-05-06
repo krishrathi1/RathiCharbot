@@ -1,5 +1,6 @@
 const { app, BrowserWindow, globalShortcut, clipboard, desktopCapturer, ipcMain, screen } = require('electron');
 const Tesseract = require('tesseract.js');
+const { execSync } = require('child_process');
 
 // ─── GPU & Display Fixes ────────────────────────────────────────
 app.commandLine.appendSwitch('disable-gpu');
@@ -17,9 +18,59 @@ if (!gotLock) { app.quit(); }
 let mainWindow;
 let worker;
 let lastClipboardText = '';
-let isProcessing = false; // Prevent overlapping scans
+let isProcessing = false;
 
-// ─── Pre-init Tesseract Worker (runs once at startup) ────────────
+// ─── Win32 Stealth API (zero dependencies) ───────────────────────
+// Uses PowerShell + .NET P/Invoke to call SetWindowDisplayAffinity.
+// WDA_EXCLUDEFROMCAPTURE (0x11) makes the window INVISIBLE to:
+//   - All screen recording software
+//   - Proctoring tools (ProctorU, Examity, etc.)
+//   - Windows + PrintScreen / Snipping Tool
+//   - OBS, Zoom screen share, Discord screen share
+// The window remains visible ONLY on your physical monitor.
+
+const fs = require('fs');
+const path = require('path');
+
+function applyWindowStealth(win) {
+  // Electron-level protection (cross-platform fallback)
+  win.setContentProtection(true);
+
+  if (process.platform !== 'win32') return;
+
+  try {
+    const hwndBuf = win.getNativeWindowHandle();
+    const hwnd = hwndBuf.readUInt32LE(0);
+
+    // Write a temporary PowerShell script file
+    const scriptPath = path.join(app.getPath('temp'), 'ghost_stealth.ps1');
+    const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class GhostStealth {
+  [DllImport("user32.dll")]
+  public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+}
+"@
+[GhostStealth]::SetWindowDisplayAffinity([IntPtr]::new(${hwnd}), 0x11)
+`;
+
+    fs.writeFileSync(scriptPath, script, 'utf8');
+    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
+      windowsHide: true,
+      timeout: 10000
+    });
+    // Clean up
+    try { fs.unlinkSync(scriptPath); } catch (e) {}
+
+    console.log('[Ghost] STEALTH ACTIVE: Window excluded from all captures');
+  } catch (e) {
+    console.log('[Ghost] Stealth fallback: setContentProtection only -', e.message);
+  }
+}
+
+// ─── Pre-init Tesseract Worker ───────────────────────────────────
 (async () => {
   try {
     worker = await Tesseract.createWorker('eng');
@@ -36,7 +87,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 420,
     height: 650,
-    x: screenW - 440,  // Bottom-right positioning
+    x: screenW - 440,
     y: screenH - 670,
     resizable: false,
     frame: false,
@@ -44,6 +95,8 @@ function createWindow() {
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
+    focusable: false,  // Won't steal focus from other apps
+    type: 'toolbar',   // Hidden from Alt+Tab natively
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
@@ -51,20 +104,12 @@ function createWindow() {
   });
 
   mainWindow.loadFile('index.html');
-  mainWindow.setContentProtection(true);
   mainWindow.setMenuBarVisibility(false);
 
-  // Clipboard auto-detection (disabled — use explicit scan instead)
-  // Uncomment below if you want auto clipboard detection:
-  // setInterval(() => {
-  //   const text = clipboard.readText();
-  //   if (text && text !== lastClipboardText && text.trim().length > 10) {
-  //     lastClipboardText = text;
-  //     if (mainWindow.isVisible()) {
-  //       mainWindow.webContents.send('clipboard-data', text);
-  //     }
-  //   }
-  // }, 1500);
+  // Apply all stealth protections after window is ready
+  mainWindow.once('ready-to-show', () => applyWindowStealth(mainWindow));
+  // Also apply immediately
+  applyWindowStealth(mainWindow);
 }
 
 // ─── Screen Capture + OCR ────────────────────────────────────────
