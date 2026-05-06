@@ -279,13 +279,14 @@
     }));
 
     // ─── Config ──────────────────────────────────────────────────
-    const API_KEY = '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';
+    const API_KEY = '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';
+    const VISION_API_KEY = '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';
     const API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
 
-    // Vision model for screen captures (reads images directly)
+    // Vision model for screen captures
     const VISION_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning';
-    // Text model for typed questions
-    const TEXT_MODEL = 'nvidia/llama-3.3-nemotron-super-49b-v1.5';
+    // Fast text model for typed questions
+    const TEXT_MODEL = 'meta/llama-3.3-70b-instruct';
 
     const SYSTEM_PROMPT = 'Give ONLY the direct answer. MCQ: option + 1-line reason. Math/logic: bold answer. No greetings.';
 
@@ -335,14 +336,14 @@
     }
 
     // ─── Stream Response Handler (shared by both models) ─────────
-    async function streamResponse(body, botDiv) {
+    async function streamResponse(body, botDiv, apiKey = API_KEY) {
       let fullResponse = '';
       let tokenCount = 0;
 
       const res = await fetch(API_URL, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${API_KEY}`,
+          'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
           'Accept': 'text/event-stream'
         },
@@ -370,7 +371,6 @@
           if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
           try {
             const data = JSON.parse(line.slice(6));
-            // Handle both regular content and reasoning_content
             const token = data.choices?.[0]?.delta?.content || '';
             if (token) {
               fullResponse += token;
@@ -415,11 +415,11 @@
         const fullResponse = await streamResponse({
           model: TEXT_MODEL,
           messages: conversationHistory,
-          temperature: 0.1,
-          top_p: 0.3,
-          max_tokens: 512,
+          temperature: 0.2,
+          top_p: 0.7,
+          max_tokens: 1024,
           stream: true
-        }, botDiv);
+        }, botDiv, API_KEY);
 
         conversationHistory.push({ role: 'assistant', content: fullResponse });
         setStatus('Ready');
@@ -468,7 +468,7 @@
             chat_template_kwargs: { enable_thinking: true },
             reasoning_budget: 8192
           }
-        }, botDiv);
+        }, botDiv, VISION_API_KEY);
 
         setStatus('Ready');
       } catch (err) {
