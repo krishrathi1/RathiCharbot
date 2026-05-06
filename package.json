@@ -4,7 +4,7 @@
   "description": "Rathi ChatBot Desktop App",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "electron . --disable-gpu",
     "pack": "npx @electron/packager . RathiChatBot --platform=win32 --arch=x64 --icon=icon.ico --overwrite"
   },
   "devDependencies": {
@@ -13,6 +13,8 @@
     "electron-packager": "^17.1.2"
   },
   "dependencies": {
-    "auto-launch": "^5.0.6"
+    "auto-launch": "^5.0.6",
+    "axios": "^1.16.0",
+    "tesseract.js": "^7.0.0"
   }
 }
