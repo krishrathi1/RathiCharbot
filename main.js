@@ -21,19 +21,16 @@ let lastClipboardText = '';
 let isProcessing = false;
 
 // ─── Win32 Stealth API (zero dependencies) ───────────────────────
-// Uses PowerShell + .NET P/Invoke to call SetWindowDisplayAffinity.
-// WDA_EXCLUDEFROMCAPTURE (0x11) makes the window INVISIBLE to:
-//   - All screen recording software
-//   - Proctoring tools (ProctorU, Examity, etc.)
-//   - Windows + PrintScreen / Snipping Tool
-//   - OBS, Zoom screen share, Discord screen share
-// The window remains visible ONLY on your physical monitor.
+// Three layers of stealth:
+// 1. WDA_EXCLUDEFROMCAPTURE (0x11) — invisible to screen capture/recording
+// 2. WS_EX_NOACTIVATE (0x08000000) — clicking the window does NOT steal
+//    focus from the browser, so proctoring focus-detection is never triggered
+// 3. WS_EX_TOOLWINDOW (0x80) — hidden from Alt+Tab
 
 const fs = require('fs');
 const path = require('path');
 
 function applyWindowStealth(win) {
-  // Electron-level protection (cross-platform fallback)
   win.setContentProtection(true);
 
   if (process.platform !== 'win32') return;
@@ -42,31 +39,40 @@ function applyWindowStealth(win) {
     const hwndBuf = win.getNativeWindowHandle();
     const hwnd = hwndBuf.readUInt32LE(0);
 
-    // Write a temporary PowerShell script file
     const scriptPath = path.join(app.getPath('temp'), 'ghost_stealth.ps1');
     const script = `
-Add-Type @"
+Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public class GhostStealth {
-  [DllImport("user32.dll")]
-  public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+public class G {
+  [DllImport("user32.dll")] public static extern bool SetWindowDisplayAffinity(IntPtr h, uint a);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
+  [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
 }
-"@
-[GhostStealth]::SetWindowDisplayAffinity([IntPtr]::new(${hwnd}), 0x11)
+"@ -Language CSharp
+$h = [IntPtr]::new(${hwnd})
+[G]::SetWindowDisplayAffinity($h, 0x11)
+$s = [G]::GetWindowLong($h, -20)
+[G]::SetWindowLong($h, -20, $s -bor 0x08000000 -bor 0x80)
 `;
 
     fs.writeFileSync(scriptPath, script, 'utf8');
-    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
-      windowsHide: true,
-      timeout: 10000
-    });
-    // Clean up
-    try { fs.unlinkSync(scriptPath); } catch (e) {}
 
-    console.log('[Ghost] STEALTH ACTIVE: Window excluded from all captures');
+    // Run async so it doesn't block app startup
+    const { exec } = require('child_process');
+    exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, {
+      windowsHide: true,
+      timeout: 30000
+    }, (err) => {
+      try { fs.unlinkSync(scriptPath); } catch (e) {}
+      if (!err) {
+        console.log('[Ghost] FULL STEALTH: Capture-proof + Focus-proof + Alt-Tab hidden');
+      } else {
+        console.log('[Ghost] Stealth partial (fallback active)');
+      }
+    });
   } catch (e) {
-    console.log('[Ghost] Stealth fallback: setContentProtection only -', e.message);
+    console.log('[Ghost] Stealth error:', e.message);
   }
 }
 
@@ -95,8 +101,6 @@ function createWindow() {
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
-    focusable: false,  // Won't steal focus from other apps
-    type: 'toolbar',   // Hidden from Alt+Tab natively
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
@@ -106,9 +110,8 @@ function createWindow() {
   mainWindow.loadFile('index.html');
   mainWindow.setMenuBarVisibility(false);
 
-  // Apply all stealth protections after window is ready
+  // Apply stealth after the window is fully created
   mainWindow.once('ready-to-show', () => applyWindowStealth(mainWindow));
-  // Also apply immediately
   applyWindowStealth(mainWindow);
 }
 
