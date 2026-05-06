@@ -115,8 +115,8 @@ async function captureScreen() {
       return;
     }
 
-    // Get base64 PNG directly — no OCR needed!
-    const screenshot = primarySource.thumbnail.toPNG();
+    // Use JPEG for smaller size + better 10-bit display compatibility
+    const screenshot = primarySource.thumbnail.toJPEG(85);
     const base64Image = screenshot.toString('base64');
 
     if (wasVisible) {

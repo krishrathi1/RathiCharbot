@@ -451,22 +451,29 @@
               content: [
                 {
                   type: 'text',
-                  text: 'Look at this screen capture. Find ALL questions visible and give the DIRECT ANSWER to each. For MCQs, state the correct option letter with a 1-line reason. For math/logic, give the bold answer. Be concise.'
+                  text: `You are looking at a screenshot of a screen. Your task:
+1. Identify EVERY question, problem, or MCQ visible in the image.
+2. For each question, provide the CORRECT answer.
+3. For MCQs: State the correct option letter (A/B/C/D) and explain in 1 line WHY it is correct.
+4. For math/logic: Show the key step and give the final answer in **bold**.
+5. For coding questions: Give the correct output or solution.
+6. Number your answers if there are multiple questions.
+Be accurate. Double-check your reasoning before answering.`
                 },
                 {
                   type: 'image_url',
-                  image_url: { url: `data:image/png;base64,${base64Image}` }
+                  image_url: { url: `data:image/jpeg;base64,${base64Image}` }
                 }
               ]
             }
           ],
-          temperature: 0.6,
-          top_p: 0.95,
+          temperature: 0.3,
+          top_p: 0.9,
           max_tokens: 4096,
           stream: true,
           extra_body: {
             chat_template_kwargs: { enable_thinking: true },
-            reasoning_budget: 8192
+            reasoning_budget: 16384
           }
         }, botDiv, VISION_API_KEY);
 
