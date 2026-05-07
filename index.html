@@ -272,6 +272,7 @@
 
   <script>
     const { ipcRenderer } = require('electron');
+    require('dotenv').config();
 
     // ─── Marked + Highlight.js Setup ─────────────────────────────
     const { markedHighlight } = globalThis.markedHighlight;
@@ -301,7 +302,7 @@
       }
     };
 
-    const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
     const GEMINI_URL = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${getApiKey()}`;
 
     const SYSTEM_PROMPT = 'Give ONLY the correct option letter (A/B/C/D) or a 1-word answer. No explanations. No reasoning. No greetings.';

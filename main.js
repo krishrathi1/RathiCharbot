@@ -8,7 +8,8 @@ const path = require('path');
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('disable-software-rasterizer');
 app.commandLine.appendSwitch('force-color-profile', 'srgb');
-app.commandLine.appendSwitch('disable-features', 'ColorCorrectRendering,GpuProcessHighPriority');
+app.commandLine.appendSwitch('disable-features', 'ColorCorrectRendering,GpuProcessHighPriority,HDR');
+app.commandLine.appendSwitch('disable-hdr');
 app.commandLine.appendSwitch('use-angle', 'gl');
 app.commandLine.appendSwitch('disable-direct-composition');
 
@@ -151,7 +152,7 @@ ipcMain.on('set-auto-scan', (event, enabled) => {
   if (enabled) {
     autoScanInterval = setInterval(() => {
       captureScreen();
-    }, 20000); // Scan every 20 seconds
+    }, 60000); // Scan every 60 seconds to save quota
   }
 });
 
