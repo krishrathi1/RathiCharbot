@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { app, BrowserWindow, globalShortcut, clipboard, desktopCapturer, ipcMain, screen } = require('electron');
 const { execSync } = require('child_process');
 const fs = require('fs');
