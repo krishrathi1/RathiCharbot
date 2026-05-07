@@ -260,7 +260,12 @@
       </div>
       <div class="status">
         <span id="statusLabel">Ready</span>
-        <span>Ctrl+A scan • Ctrl+L toggle</span>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="range" id="opacitySlider" min="0.1" max="1.0" step="0.1" value="0.9" style="width: 35px; height: 4px;" title="Opacity">
+          <a href="#" onclick="location.reload()" style="color: var(--text-dim); text-decoration: none; font-size: 8px;">Reset</a>
+          <a href="#" id="autoToggle" style="color: var(--text-dim); text-decoration: none;">Auto: OFF</a>
+          <a href="#" id="modeToggle" style="color: var(--accent); text-decoration: none;">Ghost Mode</a>
+        </div>
       </div>
     </div>
   </div>
@@ -278,17 +283,12 @@
       }
     }));
 
-    // ─── Config ──────────────────────────────────────────────────
-    const API_KEY = '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';
-    const VISION_API_KEY = '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';
-    const API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
+    // ─── Config (Gemini 2.5 Flash) ───────────────────────────────
+    const GEMINI_API_KEY = 'AIzaSyAvdxAetw4fc8Ju8W2t1pFvYBRmxaYQ9cs';
+    const GEMINI_MODEL = 'gemini-2.5-flash';
+    const GEMINI_URL = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${GEMINI_API_KEY}`;
 
-    // Vision model for screen captures
-    const VISION_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning';
-    // Fast text model for typed questions
-    const TEXT_MODEL = 'meta/llama-3.3-70b-instruct';
-
-    const SYSTEM_PROMPT = 'Give ONLY the direct answer. MCQ: option + 1-line reason. Math/logic: bold answer. No greetings.';
+    const SYSTEM_PROMPT = 'Give ONLY the correct option letter (A/B/C/D) or a 1-word answer. No explanations. No reasoning. No greetings.';
 
     // ─── Conversation Memory ─────────────────────────────────────
     let conversationHistory = [{ role: 'system', content: SYSTEM_PROMPT }];
@@ -335,24 +335,22 @@
       div.innerHTML = clean ? marked.parse(clean) : '<span class="typing-dots"></span>';
     }
 
-    // ─── Stream Response Handler (shared by both models) ─────────
-    async function streamResponse(body, botDiv, apiKey = API_KEY) {
+    // ─── Stream Response Handler (Gemini) ────────────────────────
+    async function streamGemini(contents, botDiv) {
       let fullResponse = '';
-      let tokenCount = 0;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-      const res = await fetch(API_URL, {
+      const res = await fetch(GEMINI_URL(GEMINI_MODEL), {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream'
-        },
-        body: JSON.stringify(body)
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents, safetySettings: [{ category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }] })
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`API ${res.status}: ${errText.slice(0, 80)}`);
+        const err = await res.json();
+        throw new Error(err.error?.message || `API Error ${res.status}`);
       }
 
       const reader = res.body.getReader();
@@ -368,24 +366,20 @@
         buffer = lines.pop();
 
         for (const line of lines) {
-          if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
+          if (!line.startsWith('data: ')) continue;
           try {
             const data = JSON.parse(line.slice(6));
-            const token = data.choices?.[0]?.delta?.content || '';
+            const token = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (token) {
               fullResponse += token;
-              tokenCount++;
-              if (tokenCount % 3 === 0) {
-                renderBot(botDiv, fullResponse);
-                chat.scrollTop = chat.scrollHeight;
-              }
+              renderBot(botDiv, fullResponse);
+              chat.scrollTop = chat.scrollHeight;
             }
           } catch (e) {}
         }
       }
 
-      renderBot(botDiv, fullResponse);
-      chat.scrollTop = chat.scrollHeight;
+      clearTimeout(timeoutId);
       return fullResponse;
     }
 
@@ -403,24 +397,16 @@
       }
 
       setStatus('Thinking...');
-      conversationHistory.push({ role: 'user', content: text });
-
-      while (conversationHistory.length > MAX_HISTORY + 1) {
-        conversationHistory.splice(1, 2);
-      }
+      
+      const contents = conversationHistory.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+      }));
 
       const botDiv = addMsg('', 'bot');
 
       try {
-        const fullResponse = await streamResponse({
-          model: TEXT_MODEL,
-          messages: conversationHistory,
-          temperature: 0.2,
-          top_p: 0.7,
-          max_tokens: 1024,
-          stream: true
-        }, botDiv, API_KEY);
-
+        const fullResponse = await streamGemini(contents, botDiv);
         conversationHistory.push({ role: 'assistant', content: fullResponse });
         setStatus('Ready');
       } catch (err) {
@@ -433,9 +419,19 @@
     }
 
     // ─── Send Vision Message (screen captures) ──────────────────
+    let busyTimer = null;
     async function sendVisionMessage(base64Image) {
       if (isBusy) return;
       isBusy = true;
+
+      // Failsafe: Always reset busy state after 90s regardless of what happens
+      if (busyTimer) clearTimeout(busyTimer);
+      busyTimer = setTimeout(() => { 
+        if (isBusy) {
+          isBusy = false;
+          setStatus('Ready (Failsafe Reset)');
+        }
+      }, 90000);
 
       addMsg('📸 Screen captured — analyzing...', 'user', 'scan-source');
       setStatus('Vision AI analyzing screen...');
@@ -443,45 +439,23 @@
       const botDiv = addMsg('', 'bot');
 
       try {
-        const fullResponse = await streamResponse({
-          model: VISION_MODEL,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: `You are looking at a screenshot of a screen. Your task:
-1. Identify EVERY question, problem, or MCQ visible in the image.
-2. For each question, provide the CORRECT answer.
-3. For MCQs: State the correct option letter (A/B/C/D) and explain in 1 line WHY it is correct.
-4. For math/logic: Show the key step and give the final answer in **bold**.
-5. For coding questions: Give the correct output or solution.
-6. Number your answers if there are multiple questions.
-Be accurate. Double-check your reasoning before answering.`
-                },
-                {
-                  type: 'image_url',
-                  image_url: { url: `data:image/jpeg;base64,${base64Image}` }
-                }
-              ]
-            }
-          ],
-          temperature: 0.3,
-          top_p: 0.9,
-          max_tokens: 4096,
-          stream: true,
-          extra_body: {
-            chat_template_kwargs: { enable_thinking: true },
-            reasoning_budget: 16384
+        const contents = [
+          {
+            role: 'user',
+            parts: [
+              { text: `Identify every question/MCQ in the image. For each, give ONLY the correct option letter (A/B/C/D) or the final 1-word answer. NO explanations. NO greetings. NO reasoning.` },
+              { inline_data: { mime_type: 'image/jpeg', data: base64Image } }
+            ]
           }
-        }, botDiv, VISION_API_KEY);
+        ];
 
+        const fullResponse = await streamGemini(contents, botDiv);
         setStatus('Ready');
       } catch (err) {
-        console.error('[Ghost] Vision Error:', err.message);
-        botDiv.textContent = '⚠️ ' + err.message;
-        setStatus('Error — try again');
+        console.error('[Ghost] Vision Error:', err);
+        botDiv.innerHTML = `<span style="color: #ef4444;">⚠️ Error: ${err.message}. ${err.name === 'AbortError' ? 'Request timed out.' : 'Check API key or network.'}</span>`;
+        setStatus('Error — resetting...');
+        setTimeout(() => setStatus('Ready'), 3000);
       } finally {
         isBusy = false;
       }
@@ -493,10 +467,47 @@ Be accurate. Double-check your reasoning before answering.`
       ipcRenderer.send('trigger-scan');
     }
 
+    // ─── Ghost Mode 2.0 Controls ────────────────────────────────
+    let interactionEnabled = false;
+    let autoScanEnabled = false;
+    const modeToggle = document.getElementById('modeToggle');
+    const autoToggle = document.getElementById('autoToggle');
+    const opacitySlider = document.getElementById('opacitySlider');
+
+    modeToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      interactionEnabled = !interactionEnabled;
+      ipcRenderer.send('set-interaction-mode', interactionEnabled);
+      modeToggle.textContent = interactionEnabled ? 'Interaction ON' : 'Ghost Mode';
+      modeToggle.style.color = interactionEnabled ? '#ef4444' : 'var(--accent)';
+      
+      if (interactionEnabled) {
+        input.focus();
+        if (autoScanEnabled) autoToggle.click(); // Turn off auto when interacting
+      }
+    });
+
+    autoToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (interactionEnabled) return;
+      autoScanEnabled = !autoScanEnabled;
+      ipcRenderer.send('set-auto-scan', autoScanEnabled);
+      autoToggle.textContent = autoScanEnabled ? 'Auto: ON' : 'Auto: OFF';
+      autoToggle.style.color = autoScanEnabled ? 'var(--accent)' : 'var(--text-dim)';
+    });
+
+    opacitySlider.addEventListener('input', (e) => {
+      ipcRenderer.send('set-opacity', parseFloat(e.target.value));
+    });
+
     // ─── IPC Listeners ───────────────────────────────────────────
     ipcRenderer.on('status-update', (_, msg) => setStatus(msg));
     ipcRenderer.on('screen-captured-image', (_, base64) => sendVisionMessage(base64));
     ipcRenderer.on('clipboard-data', (_, text) => sendMessage(text));
+
+    // Handle global shortcuts forwarded from main
+    ipcRenderer.on('toggle-auto-scan', () => autoToggle.click());
+    ipcRenderer.on('toggle-interaction-mode', () => modeToggle.click());
   </script>
 </body>
 </html>
